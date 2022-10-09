@@ -1,6 +1,18 @@
 # Completion-Weekly
 操作系统毕业设计周报
 
+第四周报告
+
+本周工作总结：
+
+一：在loadeer.rs中内核同时加载多个应用，在task子模块中进行任务管理，即协作式调度和抢占式调度；实现了多个任务分时轮流运行。
+
+二：实现sys_task_info功能来获取当前任务的信息，在task子模块中task.rs的TaskControlBlock中添加syscall_times得到系统调用次数，添加start_time得到开始时间，在task子模块中mod.rs中先调用get_time_us得到开始时间，添加get_current_task得到当前任务的信息和increase_syscall_times设置系统调用的次数；并对外提供接口。在syscall子模块的process.rs中得到当前任务的状态、系统调用次数和总共运行时间。
+
+下周工作目标：
+
+一：继续完成上周未完成的任务。
+
 第三周报告
 
 本周工作总结：
