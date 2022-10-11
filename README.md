@@ -1,6 +1,14 @@
 # Completion-Weekly
 操作系统毕业设计周报
 
+第五周报告
+
+本周工作总结：
+
+一：经过和陈林峰同学的讨论，lab1的代码没有问题，是实验的配置问题，开始的问题需要将Cargo.toml的最后三行注释掉，任然有问题是因为为了能够完成实验环境的配置将rust-toolchain里的时间从04-11改为另了09-30，将时间改回04-11，就能够完成make test3,但是会上传失败Error: The process '/home/runner/.cargo/bin/cargo' failed with exit code 101。
+
+
+
 第四周报告
 
 本周工作总结：
