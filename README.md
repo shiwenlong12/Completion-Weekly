@@ -14,6 +14,12 @@
 
 四：完成了lab2的实验要求，地址为https://github.com/LearningOS/lab2-os4-shiwenlong12
 
+五：学习了第四章进程及进程管理。
+
+下周工作目标：
+
+一：完成lab3和lab4的实验。
+
 第四周报告
 
 本周工作总结：
