@@ -2,12 +2,15 @@
 
 
 ## 第七周报告
-### 本周工作总结
-一：学习了ch6文件系统的代码讲解和练习解析视频，并且记录了主要的设计实现思路和方法作为学习心得，方便以后写毕业设计论文。地址为https://github.com/shiwenlong12/Completion-Weekly/blob/main/reports/lab4%E6%96%87%E4%BB%B6%E7%B3%BB%E7%BB%9F.md  
-
+### 本周工作总结：
+一：学习了ch6文件系统的代码讲解和练习解析视频，并且记录了主要的设计实现思路和方法作为学习心得，方便以后写毕业设计论文。地址为https://github.com/shiwenlong12/Completion-Weekly/blob/main/reports/lab4%E6%96%87%E4%BB%B6%E7%B3%BB%E7%BB%9F.md。  
+### 下周工作目标：
+一：写完ch6文件系统的学习心得。  
+二：补上ch3多道程序与分时多任务,ch4地址空间,ch5进程及进程管理的学习心得。  
+三：学习ch8同步互斥的视频讲解并写上学习心得。
 
 ## 第六周报告
-### 本周工作总结
+### 本周工作总结：
   一：引入了进程的概念，不再通过硬编码来执行，而是通过加载elf数据的形式来执行。在task/processor.rs中增加了更新系统调用次数、得到系统调用次数、得到进程运行时间、设置优先级、申请内存、释放内存等函数。  
   二：在syscall/process.rs中实现了spawn函数，新建子进程，使其执行目标程序。spawn函数基本上就是fork函数和exec函数结合起来的，主要区别就是不像fork函数一样复制父进程的地址空间。  
   三：在task/manager.rs中实现了stride调度算法，计算方式是 P.stride = BigStride / P.priority,每次执行一个任务需要inner.pass += stride,然后再调度时选择pass最小的执行。因为priority当了分母，所以优先级越大stride就越小，进程就越先被调用。  
