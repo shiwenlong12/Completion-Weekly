@@ -3,7 +3,7 @@
 
 ## 第七周报告
 ### 本周工作总结：
-一：学习了ch6文件系统的代码讲解和练习解析视频，并且记录了主要的设计实现思路和方法作为学习心得，方便以后写毕业设计论文。地址为https://github.com/shiwenlong12/Completion-Weekly/blob/main/reports/lab4%E6%96%87%E4%BB%B6%E7%B3%BB%E7%BB%9F.md。  
+一：学习了ch6文件系统的代码讲解和练习解析视频，并且记录了主要的设计实现思路和方法作为学习心得，方便以后写毕业设计论文。地址为https://github.com/shiwenlong12/Completion-Weekly/blob/main/reports/lab4%E6%96%87%E4%BB%B6%E7%B3%BB%E7%BB%9F.md  
 ### 下周工作目标：
 一：写完ch6文件系统的学习心得。  
 二：补上ch3多道程序与分时多任务,ch4地址空间,ch5进程及进程管理的学习心得。  
