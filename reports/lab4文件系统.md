@@ -56,10 +56,10 @@ sys-close功能为关闭进程对文件描述符为fd的文件的访问权限。
    第一个区域只包括一个块，即超级块（Super Block），用于定位其他区域的连续位置，检查文件系统的合法性。  
    第二个区域是一个索引节点位图（inode bitmap），长度为若干个块，它记录了索引节点区域中有哪些索引节点已经被分配出去使用了。  
    第三个区域是索引节点区域（inode area)，长度位若干个块，其中每个块都存储了若干个索引节点。  
-   第四个区域是一个数据块位图（date bitmap)，长度位若干个块，它记录了后面的数据块区域中有哪些已经被分配出去使用了。  
-   最后的区域是数据块区域（date area），其中的每个被分配出去的块保存了文件或目录的具体内容。   
+   第四个区域是一个数据块位图（data bitmap)，长度位若干个块，它记录了后面的数据块区域中有哪些已经被分配出去使用了。  
+   最后的区域是数据块区域（data area），其中的每个被分配出去的块保存了文件或目录的具体内容。   
 ### 超级块
-   超级块结构为pub struct SuperBlock{magic:u32,pub total_blocks:u32,pub inode_bitmap_blocks:u32,pub inode_area_blocks:u32,pub date_bitmap_blocks:u32,pub date_area_blocks:u32,}  
+   超级块结构为pub struct SuperBlock{magic:u32,pub total_blocks:u32,pub inode_bitmap_blocks:u32,pub inode_area_blocks:u32,pub data_bitmap_blocks:u32,pub data_area_blocks:u32,}  
 ### 位图
    位图就是一个区域，比如说有1024个磁盘块，我们要知道它有没有被使用，如果是空闲的，那么我们就有1024个bit的位图去对应1024个磁盘块，然后我们查表，发现它的bit是0的时候就代表对应的磁盘块没有被使用，如果等于1，那就代表被使用了。这个位图的存在对我们磁盘分配很有用，我们释放磁盘块的时候，只需要把磁盘块对应的位图改为0就可以了。  
    位图结构是pub struct Bitmap{start_block_id:usize,blocks:usize,},位图也存放在磁盘中，如果我们知道了一个位图的起始位置，和这个位图有多大能控制多少块，那么我们在磁盘当中就能够找到这个位图，然后我们对位图定义提供分配和回收对应数据块的方法：new(),alloc():从这个位图里面去找第一个即对应bit位为0的哪个位置，找到对应的磁盘块,获取对应的磁盘块编号，dealloc()控制Block的回收。  
@@ -85,6 +85,7 @@ sys-close功能为关闭进程对文件描述符为fd的文件的访问权限。
 
 ## 七：对文件系统的最外层封装
    定义一个文件系统，实际上只需要给出一个虚拟设备名以及其基本磁盘布局就可以了。
+   pub struct EasyFileSystem{pub block_device:Arc<dyn BlockDevice>,pub inode_bitmap:Bitmap,pub data_bitmap:Bitmap,inode_area_start_block:u32,data_area_start_block:u32,}描述了这个文件系统首先是哪个设备，然后它的索引和数据个位图，然后索引和数据的起始区域。假设有一个设备，然后这个设备里面该有的区域我们都已经知道了，那么实际上我们已经知道了这个文件系统，因为它的接口我们已经有了，通过EasyFileSystem结构我们知道哪一块是索引inode哪一块是数据data，哪一块是位图bitmap，然后根据接口，我们就能够访问里面的文件了。
    
    
    
