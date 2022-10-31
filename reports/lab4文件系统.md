@@ -45,3 +45,57 @@ sys-close功能为关闭进程对文件描述符为fd的文件的访问权限。
    一个文件系统对应一个虚拟设备，而我们对磁盘的访问是以Block为基本单位的，我们通过块的编号去读写整个磁盘块，我们通过虚拟化来实现对磁盘的这种访问模式，其具体细节在easy_fs_fuse中，我们利用一个Linux文件来模拟磁盘区域，但是现在我们只需要关注虚拟化为我们提供的接口即可：在BlockDevice结构中函数read_block(&self,block_id:usize,buf:&mut[u8])功能是根据block_id把一个我们规定为4096bit大小的磁盘块数据读到buf数组里面去，writeck(&self,block_id:usize,buf:[u8])功能是把buf中的数据写入block_id号磁盘块中。因此，我们只要有block_id我们就可以直接找到对应的block，然后把它读写，与buf进行数据交换。
 ### 块缓存层
    访问磁盘块时，我们有必要把最近访问的磁盘块在内存中缓存起来来减少I/O操作，从而提高系统性能。
+   pub struct BlockCache{cache:[u8;BLOCK_SZ],block_id:usize,block_device:Arc<dyn BlockDevice>,modified:bool,},cache是内存里面的一个数组，作为高速缓存区；block_id代表这个缓存结构存放的是第几个block；block_device表示它属于哪个虚拟设备，这个虚拟设备在我们这里只有一个磁盘0号设备；modified表示修改位，即有没有被写过，如果这个缓存被写过，那它被释放掉的时候也应该真的去写磁盘read_block，如果这个缓存没有被写过，那么就没有必要写回到磁盘里面去了，可以直接把这个缓存给释放掉。
+   方法fn addr_of_offset(&self,offset:usize) -> usize{}缓存的偏移；get_ref()获取磁盘块某一个偏移位置的指针；get_mut()可以去修改偏移位置的指针；read(),modify()分别进行读和修改操作；sync()把缓冲块的内容写回到磁盘里面去。
+   我们在new()的时候已经把磁盘块从磁盘里面读到读到内存里面来了，所以我们后面访问磁盘都不去真正的访问磁盘块了，我们都是去访问这个缓存区，我们看这个缓存区里面有没有对应的磁盘块，如果有那我们就直接读这个磁盘块就可以了，如果没有的话，那我们把这个磁盘块从外存当中读到缓存里面来，然后我们在访问这个磁盘块。所以，从后面开始我们的接口就需要变化了，read_block()与write_block()这两个函数我们就直接不需要使用了。至此，对磁盘块的访问完全转化为了对缓存块的访问，与之前类似，我们设计一个结构来组织它，并为其提供接口。
+   pub struct BlockCacheManager{queue:VecDeque<(usize,Arc<Mutex<BlockCache>>)>,}实现方法get_block_cache()就是把这个磁盘块拿过来，然后我们从里面读从里面写，相当于对磁盘块的访问。写的时候可能有一个一致性问题，就是写一半的时候断电了，磁盘里面的数据就没了，但是这里我们暂时不考虑这么多。
+   然后就是常规的实例化一个BlockCacheManager并且向外暴露两个接口：get_block_cache()获取对应的缓存块和block_cache_sync_all()功能是把整个缓存区全部写回磁盘块中。
+
+## 五：文件系统外存布局
+   在之前的内容中，我们自需要知道DiskInode的编号就能够知道DiskInode在哪里，这是因为查表了，那我们起码要知道这个表的起始位置在哪里，然后这个表要控制哪些磁盘块，它要知道每个数据在第几个磁盘块上面，所以我们起码要知道磁盘块区域在哪里，比方说是在第1024个磁盘块磁盘块开始的，那我说第三个数据块就是第1024+3=1027个数据块，这样我们才能去访问到它。所以我们需要知道磁盘的布局，easy-fs磁盘按照块编号从小到大的顺序依次分成了连续的5个区域分别是：  
+   第一个区域只包括一个块，即超级块（Super Block），用于定位其他区域的连续位置，检查文件系统的合法性。  
+   第二个区域是一个索引节点位图（inode bitmap），长度为若干个块，它记录了索引节点区域中有哪些索引节点已经被分配出去使用了。  
+   第三个区域是索引节点区域（inode area)，长度位若干个块，其中每个块都存储了若干个索引节点。  
+   第四个区域是一个数据块位图（date bitmap)，长度位若干个块，它记录了后面的数据块区域中有哪些已经被分配出去使用了。  
+   最后的区域是数据块区域（date area），其中的每个被分配出去的块保存了文件或目录的具体内容。   
+### 超级块
+   超级块结构为pub struct SuperBlock{magic:u32,pub total_blocks:u32,pub inode_bitmap_blocks:u32,pub inode_area_blocks:u32,pub date_bitmap_blocks:u32,pub date_area_blocks:u32,}  
+### 位图
+   位图就是一个区域，比如说有1024个磁盘块，我们要知道它有没有被使用，如果是空闲的，那么我们就有1024个bit的位图去对应1024个磁盘块，然后我们查表，发现它的bit是0的时候就代表对应的磁盘块没有被使用，如果等于1，那就代表被使用了。这个位图的存在对我们磁盘分配很有用，我们释放磁盘块的时候，只需要把磁盘块对应的位图改为0就可以了。  
+   位图结构是pub struct Bitmap{start_block_id:usize,blocks:usize,},位图也存放在磁盘中，如果我们知道了一个位图的起始位置，和这个位图有多大能控制多少块，那么我们在磁盘当中就能够找到这个位图，然后我们对位图定义提供分配和回收对应数据块的方法：new(),alloc():从这个位图里面去找第一个即对应bit位为0的哪个位置，找到对应的磁盘块,获取对应的磁盘块编号，dealloc()控制Block的回收。  
+###  磁盘索引节点DiskInode  
+   在这一部分我们就要构建DiskInode结构和实现方法，来实现如何通过DiskInode来访问文件这一个操作的。  
+   DiskInode的结构是pub struct DiskInode{pub size:u32,pub direct:[u32;INODE_DIRECT_COUNT],pub indirect1:u32,pub indirect2:u32,type_:DiskInodeType,},size表示对应的文件的大小，direct直接索引，indirect1一级索引，indirect2二级索引，type_表示它是文件还是目录，在我们这次实验中，只有一个根目录其他的type_都是文件。  
+   每一个文件/目录在磁盘上都是以一个DiskInode的形式存储，其中包含文件/目录的元数据：size表示文件目录的字节数;type_表示索引节点的类型DiskInodeType，目前仅支持文件File和目录Directory;其余的direct，indirect1，indirect2都是存储文件内容/目录内容的数据块的索引。  
+   根据之前的假设，DiskInode应该具备随机访问文件随机地址的接口。  
+   我们的磁盘数据都是以Block格式来进行存放的，那么我们逻辑上的文件也应该有逻辑上的块，如果我们能够完成逻辑块到物理块之间的一个转化，那么我们就能够完成地址的访问，就跟我们的虚拟页表是一样了，所以就有了接口get_block_id(&self,inner_id:u32,block_device:&Arc<dyn BlockDevice>),inner_id表示的是逻辑上的第多少块，我们文件的存放方式是先用直接索引direct，如果直接索引不够用那么就用一级索引indirect1，一级索引还不够用那么就用二级索引indirect2，所以如果inner_id小于直接索引的个数INODE_DIRECT_COUNT,那么我们直接返回inner_id对应的直接索引就可以了。如果inner_id大于直接索引的个数INODE_DIRECT_COUNT，小于一级索引的个数INDIRECT1_COUNT,那么我们就用一级索引，通过get_block_cache()先找到一级索引块，看看一级索引块里面存的是什么，然后再从里面找到对应的，假设之前的直接索引有1000个，那么第1006个就只能放在一级索引里面，就是一级索引里面的第6块，想要找到一级索引里面的第6块，就需要先看看一级索引指向的是哪个索引块，然后需要去这个索引块里面找到它存放的第6个索引，然后它就是那个对应的指针对应的数据块所在的索引的索引块的位置。  
+   通过这个接口，可以获取文件逻辑块对应的物理块的地址，然后类似于虚拟页表中的转化方法就可以访问到对应的物理地址了，接下来解决了如何实现read_at(&self,offset:usize,buf:&mut[u8],block_device:&Arc<dyn BlockDevice>,),write_at的问题。read_at()函数先利用offset找到一个块，然后我们实现块对块的一个转化，文件的虚拟块到实际的物理块之间的转化，转化完了之后，找到磁盘当中的物理地址进行读写就可以了。write_at()和read_at()基本一样，不过在write_at()之前需要对比缓冲区和文件容量的大小，如果容量不够需要调用扩容函数increase_size(&mut self,new_size:u32,new_blocks:Vec<u32>,block_device:&Arc<dyn BlockDevice>,),在这里也涉及到如果直接索引够用怎么样，一级索引够用怎么样，二级索引够用怎么样，所以需要进行一系列的比较，然后决定从哪里去分配给它索引块，然后给它分配数据块，然后还要填入到对应的索引指针的位置和索引块里面去。与increase_size()对应的还有clear_size(&mut self,block_device:&Arc<dyn BlockDevice>,)函数，就是文件被清空的时候，它所有的磁盘块都要回收掉。  
+   到这里，我们就实现了通过DiskInode对文件进行随机访问了。  
+   
+## 六：用户read()和write()整体逻辑整理
+### 从OSInode到读取文件数据
+   以read()为例，read()的接口为pub fn sys_read(fd:usize,buf:*const u8,len:usize) -> isize,它需要获取文件的OSInode，然后利用OSInode的接口read()来读取，而OSInode是借助其内部封装的Inode来read的，然后我们可以发现Inode的read_at是通过DiskInode的read来实现的，最后，我们在磁盘索引节点DiskInode中提到了具体利用DiskInode去读取文件的方法，至此，完成了闭环。  
+### 获取OSInode的方法  
+   另一条主线是把文件对应的OSInode放入进程的fd_table中，参数为文件的path，这里使用系统调用open();主体函数是open_file(name:&str,flags:OpenFlags) -> Option<Arc<OSInode>>，这个函数比较重要的点是:参数flags是一个标记，如果参数flags含有一个CREATE，那么如果找到了ROOT_INODE.find(name)返回的inode，那么就封装好返回OSInode,如果没有找到find(name)返回的inode，那么就调用ROOT_INODE.create(name)创建一个，然后同样封装好返回给open_file函数；如果参数flags没有一个CREATE，那么如果找到了find(name)返回的inode，那么就封装好返回OSInode给open_file函数，如果没找到就直接返回NONE。  
+   主体函数是根节点下的find()和create()函数，这里先看find(&self,name:&str) -> Option<Arc<Inode>>函数这条路线，ifnd()函数是Inode结构的方法，这个方法的重点是通过自己的方法read_disk_inode获取到find_inode_id()，然后通过find_inode_id()返回值和get_disk_inode_pos(inode_id)获取到对应的位置。  
+   函数find_inode_id(&self,name:&str,disk_inode:&DiskInode,) -> Option<u32>需要对目录项进行遍历，在遍历的时候,需要的时候就会去访问到DiskInode,然后用到disk_inode.read_at(DIRENT_SZ*i,dirent.as_bytes_mut(),&self.block_device,),read_at()根据直接索引，一级索引，二级索引来实现。  
+### 创建文件的方法
+   刚才提到了在inode代表的文件目录下面创建一个新文件的接口create()，创建一个文件，自然需要在DiskInode表中新分配一个DiskInode，获取其编号，然后创建它的目录项，使该目录项指向新分配的DiskInode，就是把刚才获得的编号写到这个新创建的目录项里面去，然后还要再目录文件下面插入该目录项。所以create()函数整体上就是按照这样来工作的。  
+   函数pub fn create(&self,name:&str) -> Option<Arc<Inode>>首先需要先找到root_inode，然后从root_inode里面去找到对应的目录项，如果找到了，那么就返回NONE，因为root_inode里面已经有这个名字了，我们不能去创造同名的目录项；如果没有找到的话，那么就先使用new_inode_id = fs.alloc_inode()分配一个DiskInode,然后去到对应的磁盘的数据位置得到new_inode_block的编号id和偏移位置offset，然后我们想要访问磁盘块，就需要通过缓冲get_block_cache()，在里面进行一些必要的初始化，然后我们再把目录项给写如目录中，最后，我们需要对它进行同步，就是我们刚才写进去了之后我们需要把它写回到对应的DiskInode里面去，这样，我们就完成了create()。
+
+## 七：对文件系统的最外层封装
+   定义一个文件系统，实际上只需要给出一个虚拟设备名以及其基本磁盘布局就可以了。
+   
+   
+   
+   
+   
+
+   
+   
+   
+   
+   
+   
+   
+   
