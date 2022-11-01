@@ -85,15 +85,27 @@ sys-close功能为关闭进程对文件描述符为fd的文件的访问权限。
 
 ## 七：对文件系统的最外层封装
    定义一个文件系统，实际上只需要给出一个虚拟设备名以及其基本磁盘布局就可以了。
-   pub struct EasyFileSystem{pub block_device:Arc<dyn BlockDevice>,pub inode_bitmap:Bitmap,pub data_bitmap:Bitmap,inode_area_start_block:u32,data_area_start_block:u32,}描述了这个文件系统首先是哪个设备，然后它的索引和数据个位图，然后索引和数据的起始区域。假设有一个设备，然后这个设备里面该有的区域我们都已经知道了，那么实际上我们已经知道了这个文件系统，因为它的接口我们已经有了，通过EasyFileSystem结构我们知道哪一块是索引inode哪一块是数据data，哪一块是位图bitmap，然后根据接口，我们就能够访问里面的文件了。
+   pub struct EasyFileSystem{pub block_device:Arc<dyn BlockDevice>,pub inode_bitmap:Bitmap,pub data_bitmap:Bitmap,inode_area_start_block:u32,data_area_start_block:u32,}描述了这个文件系统首先是哪个设备，然后它的索引和数据个位图，然后索引和数据的起始区域。假设有一个设备，然后这个设备里面该有的区域我们都已经知道了，那么实际上我们已经知道了这个文件系统，因为它的接口我们已经有了，通过EasyFileSystem结构我们知道哪一块是索引inode哪一块是数据data，哪一块是位图bitmap，然后根据接口，我们就能够访问里面的文件了。但是我们既然外层封装了一层，那么我们当然需要进行进一步的封装处理。  
+   在EasyFileSystem结构中，pub fn create(block_device:Arc<dyn BlockDevice>,total_blocks:u32,inode_bitmap_blocks:u32) ->Arc<Mutex<self>>参数为设备，总块数量，索引位图的块个数，我们知道索引位图有多少个块我们就可以知道索引有多少个块，然后我们又知道一共有多少个块，两者相减，我们就能够知道数据有多少个块，这样的话整个区域我们就全都清楚了，就可以根据外存布局，完成create()函数。pub fn open(block_device:Arc<dyn BlockDevice>) -> Arc<Mutex<self>>函数的功能就是将文件系统载入我们的机器，即把文件系统的超级块SuoerBlock放入我们的内存里面去，这样的话我们就可以通过超级块做各种各样的访问。pun fn root_inode(efs:&Arc<Mutex<self>>) ->Inode功能是返回文件系统的根目录。pun fn get_disk_inode_pos(&self,inode_id:u32) ->(u32,usize)功能是前面封装好的，通过id获取inode的位置，返回值有两个，一个是它的磁盘号，一个是它的偏移量。   get_data_block_id(&self,data_block_id:u32) -> u32功能是通过数据块编号得到数据块位置，是很简单的加法。alloc_inode(&mut self) -> u32分配一个新的索引；alloc_data(&mut self) -> u32分配一个新的数据块；dealloc_data(&mut self,block_id:u32回收一个数据块。  
    
+## 八：将应用打包到文件系统中
+   这个过程实际上就是在宿主OS上创建一个文件，在这里就是创建了一个Linux文件，大小是4MB，将其封装为块设备，并将read_block()和write()的接口暴露给OS，我们以该f为虚拟设备构建一个EasyFileSystem结构，此后，我们遍历每一个应用的文件名，用它作为name来创建文件，再在该文件中写入对应的程序数据，也就是用文件名创建目录，然后我们用write把实际的数据写到这个文件里面去。这样，在系统视角下，我们就可以通过文件名来访问所有的应用，而不必像之前的实验那样把所有的数据都硬编码在内核的数据段中。  
    
-   
-   
-   
-
-   
-   
+# lab4编程作业
+## 硬链接
+   硬链接的含义就是我们有一个目录项指向一个文件，现在我们创建它的一个硬链接就是我们再创造一个目录项也指向这个文件，
+   硬链接要求两个不同的目录项指向同一个文件，在我们的文件系统中也就是两个不同名称的目录项指向同一个磁盘块。本节要求实现三个系统调用：sys_linkat,sys_unlinkat,fstat。
+   fn linkat(olddirfd:i32,oldpath:*const u8,newdirfd:i32,newpath:*const u8,flags:u32) -> i32功能是创建一个文件的硬链接。
+   fn unlinkat(dirfd:i32,path:*const u8,flags:u32) ->i32功能是取消一个文件路径到文件的链接。
+### sys_linkat
+   在这次实验中，pub fn sys_linkat（oldpath:*const u8,newpath:*const u8） -> isize,语义就是创建一个新的目录项，name为newpath，将其链接到oldpath对应的DiskInode上。它的基本思路很简单，通过oldpath检索对应的inode编号n，再找到对应的DiskInode，将这个DiskInode的链接计数加1，然后创建一个新的目录项，新目录项的name是newpath，索引节点的编号为n，就可以完成任务，将新的目录项链接上了。主要通过link_file()函数来实现,link_file(oldname:&str,newname:&str) -> Option<()>在根目录下实现ROOT_INODE.link(oldname,newname)。
+   重点就是Inode结构里的函数实现，link(&self,oldname:&str,newname:&ste) -> Option<()>实现方法是首先获取old_inode_id，如果没有旧的id，那么就是失败了直接返回NONE，然后获取旧的id对应的DiskInode的块编号block_id和块偏移量block_offset，然后就能够将DiskInode的链接计数加一n.nlink += 1,然后通过modify_disk_inode修改root_inode，向里面write_at，从原文件的末尾处开始写，写我们新创建的这个目录项。
+### sys_unlinkat
+   sys_unlinkat(path：*const u8) -> isize功能是将path对应的硬链接删除。
+   unlinkat稍微复杂一点，因为检索到path对应的DiskInode，将其所对应的链接计数减一之后，还需要从根目录中把名为path的目录项移除,这个移除的实现比较复杂。还有就是如果链接计数为0了之后，我们需要去把这个DiskInode去释放掉，好在释放函数我们都已经写好了。
+   具体实现与linkat一样，主要关注unlink(&self,name:&str) -> Option<()>，删除目录项的实现方法是新建一个可变向量V，我们需要找到文件名等于传入参数name的目录项，并且把它删掉，我们把其他的不用被删除的目录项全部用向量V保存起来，然后我们把V里面的内容拿给根目录重写一下，就实现了删除指定目录项的功能。实现就是先访问到根目录里面，然后同样是检索，如果检索的目录项的名字不是传入的名字，那么我们就把这个目录项push到V中，如果是传入的name，那么我们就可以获取到它里面的哪个inode也就是文件对应的inode，把inode写在inid里面。然后我们再去根目录里面，我们需要把根目录给dealloc掉，然后我们把V重新写进去，写完之后，我们需要把n.nlink -=1,如果n.nlink==0，也就是引用计数没了，那么我们需要把整个全部清空，做完了这些只是get_block_cache对缓冲区做的，我们还需要一致化，把修改的结果弄到磁盘里面去，sys_unlink才算完成。
+### fstat
+   fstat(fd:i32,st:*mut Stat) -> i32,功能是获取文件的状态，参数为fd文件描述符，st文件状态结构体。stat获取起来很简单，主要还是一个地址转化的过程，获取stat的关键主要是参数inodo文件所在inode编号ino，文件类型mode，硬链接数量nlink。
    
    
    
