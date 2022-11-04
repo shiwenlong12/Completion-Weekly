@@ -79,14 +79,16 @@ chapter4与之前相比，难度大了很多，在我们前面的章节当中，
     }
 /*  
 我们这里是用来from triat里面的from来对它们进行处理，，通过这个处理之后我们就可以usize到物理页，到虚拟页、到物理地址、到虚拟地址都可以通过from函数轻易的实现了。  
-*/    
-这里增加了各种结构与usize的from关系，通过这样的方式我们可以用较为简单和通用的写法去获取结构包裹的usize值。  
+*/  
+
+这里增加了各种结构与usize的from关系，通过这样的方式我们可以用较为简单和通用的写法去获取结构包裹的usize值。   
+
 /*  
 比方说，我们想要一个虚拟页vp，我们有了一个usize，我们应该怎么做呢，我们通过这样一个from调用：let vp = VirtPageNum::from(p);，然后就可以封装好一个VirtPageNum，如果我们想要获取里面的，我们vp.into就可以了。我们当然也可以使用vp.0。  
 */  
-    let p:usize = 1086;
-    let vp = VirtPageNum::from(p);
-    let p2:usize = vp.into;
+    let p:usize = 1086;  
+    let vp = VirtPageNum::from(p);  
+    let p2:usize = vp.into;  
 
 /*  
 之前，我们封装的是usize与虚拟页、usize与虚拟地址、usize与物理页、usize与物理地址之间的关系，但是实际上，我们更重要的关系是虚拟地址跟虚拟页之间的关系，物理地址跟物理页之间的关系。我们可以想一下，一个地址如果是分成一个页一个页的，那它一定有自己所在的那个页，我们的虚拟地址所在的虚拟页，那怎么转换成虚拟页，就是调用floor(&self) -> VirtPageNum函数，ceil(&self) -> VirtPageNum函数的功能是：比方说某一个地址在第五页上面，那ceil（）函数会到它后面那个页里面，到第六页，它永远是取到了地址的后面一个页，但是有一种特殊情况，就是当它是某一页的第一个位置，也就是边界的那个位置的话，ceil()函数和floor()函数是一样的，都表示当前的页。  
@@ -180,11 +182,13 @@ get_end()函数也是一样，取不到r，只能取到r前面一个。
 我们使用这个区间主要就是为了方便使用它的迭代器，我们有了一个区间之后，比方说我们想要访问地20页到第200页之间所有的虚拟页，那我们其实只需要创建一个迭代器，然后就可以使用迭代器的方法遍历访问里面所有的虚拟页了。  
 这些封装的接口了解一下就行了，我们只需要知道迭代器有一个new()的方法，传入的参数是下界与上界，然后我们就可以使用这个迭代器对区间里面所有的元素进行遍历。  
 */  
+
 最后，我们对以上结构进行封装，就可以获取VirtPageNum类型的Range类型了。
     /// a simple range structure for virtual page number
     //一种简单的虚拟页码范围结构
     pub type VPNRange = SimpleRange<VirtPageNum>;  
 此后，我们便可以使用VPNRange来对一段虚拟页区间做操作了。  
+
 /*  
 我们用VPNRange来表示虚拟页相关的区间。这个区间结构对我们来说在后面实验设计的时候还挺好用的，我们会在后面具体举一个例子来说明怎么使用这个区间结构。  
 */  
@@ -211,7 +215,15 @@ get_end()函数也是一样，取不到r，只能取到r前面一个。
 这样的话，我们只需要与刚才一样，我们用一个usize来代表一个页表项，当然了，页表项的存储很简单，主要还是对页表项的解析。我们的页表项里面存的就2个，一个是物理页号，一个是标记，因此我们需要通过bits把它们反解析出来，而且给了物理页号与标志位也要能够把bits给构建出来。  
 */  
 
-一个usize正好对应64位二进制，因此可以代表一个页表项，我们的重点是构建页表项的处理函数：new(ppn: PhysPageNum, flags: PTEFlags) -> Self、empty() -> Self、ppn(&self) -> PhysPageNum、flags(&self) -> PTEFlags、is_valid(&self) -> bool、  readable(&self) -> bool、writable(&self) -> bool、executable(&self) -> bool。  
+一个usize正好对应64位二进制，因此可以代表一个页表项，我们的重点是构建页表项的处理函数：  
+    new(ppn: PhysPageNum, flags: PTEFlags) -> Self、  
+    empty() -> Self、  
+    ppn(&self) -> PhysPageNum、  
+    flags(&self) -> PTEFlags、  
+    is_valid(&self) -> bool、  
+    readable(&self) -> bool、  
+    writable(&self) -> bool、  
+    executable(&self) -> bool。  
 /*  
 is_valid()表示这个页表项是不是有效的，什么时候会有效，曾经装过这个虚拟页，并且我们没有让这个虚拟页失效，也就是说这个页表项是可以用的，曾经定义过这个页表项，页表项对应的虚拟页时可以用的，这样V标志位为1，页表项就叫有效。  
 */  
@@ -242,4 +254,246 @@ is_valid()表示这个页表项是不是有效的，什么时候会有效，曾�
 
 ### 分配空闲物理页帧与释放已用页帧
 
+/*  
+在此之前，都是一些虚拟页号，物理页号之间的一些转化和解析，实际上并没有真正的去探测我们的物理内存，现在我们要实现分配空闲物理页帧与释放已用页帧这样一个结构。
+*/  
 
+我们声明一个FrameAllocator Trait来描述一个物理页帧管理器需要提供哪些功能：
+    //src/mm/frame_allocator.rs
+    trait FrameAllocator {
+        fn new() -> Self;
+        fn alloc(&mut self) -> Option<PhysPageNum>;
+        fn dealloc(&mut self, ppn: PhysPageNum);
+    }
+
+真实的分配器使用一个简单的栈式分配器
+    //src/mm/frame_allocator.rs
+    pub struct StackFrameAllocator {
+        current: usize,
+        end: usize,
+        recycled: Vec<usize>,
+    }
+
+/*
+如果一开始，系统里面所有的内存页都没有被用过的话，[current,end]就是从0到最大的边界。  
+*/  
+[current,end]表示从未使用过的且可用的物理页帧号，recycled用来存放被回收的物理页，当需要分配新的页帧的时候，优先从recycled中获取页帧，如果recycled为空，再从[current,end]区域分配可用帧。当页帧被回收的时候，将该栈帧推入recycled中，用代码描述其方式如下：  
+
+    impl FrameAllocator for StackFrameAllocator {
+        //之后会有初始化，现在设置成[0,0]没有事
+        fn new() -> Self {
+            Self {
+                current: 0,
+                end: 0,
+                recycled: Vec::new(),
+            }
+        }
+        fn alloc(&mut self) -> Option<PhysPageNum> {
+            //如果recycled里面有的话，从里面拿
+            if let Some(ppn) = self.recycled.pop() {
+                Some(ppn.into())
+            } else if self.current == self.end {
+                //如果recycled没有，并且current到end了，就没有多的页可以用了，返回None
+                None
+            } else {
+                //否则，从[current,end]里面拿current的
+                self.current += 1;
+                Some((self.current - 1).into())
+            }
+        }
+        fn dealloc(&mut self, ppn: PhysPageNum) {
+            let ppn = ppn.0;
+            // validity check
+            if ppn >= self.current || self.recycled.iter().any(|v| *v == ppn) {
+                panic!("Frame ppn={:#x} has not been allocated!", ppn);
+            }
+            // 把要回收的页放到recycle里面去
+            self.recycled.push(ppn);
+        }
+    }
+
+    impl StackFrameAllocator {
+        //new()出来之后会进行初始化
+        pub fn init(&mut self, l: PhysPageNum, r: PhysPageNum) {
+            self.current = l.0;
+            self.end = r.0;
+        }
+    }
+
+跟之前的方法类似，创建一个StackFrameAllocator的全局实例，然后给出各种操作的外部接口。注意，在全局实例中需要将其可用帧初始化为真实可用的页帧范围：
+    type FrameAllocatorImpl = StackFrameAllocator;
+
+    lazy_static! {
+        /// frame allocator instance through lazy_static!
+        //创建一个全局实例，并且用智能指针给包起来，才能更好的全局使用
+        pub static ref FRAME_ALLOCATOR: UPSafeCell<FrameAllocatorImpl> =
+            unsafe { UPSafeCell::new(FrameAllocatorImpl::new()) };
+    }
+
+    /// initiate the frame allocator using `ekernel` and `MEMORY_END`
+    //对实例进行初始化的实现
+    pub fn init_frame_allocator() {
+        extern "C" {
+            fn ekernel();
+        }
+        //我们把ekernel作为一个起始地址，MEMORY_END作为一个结束地址，这一段作为页帧分配器的使用范围
+        //ekernel就是end kernel的意思，即是内核区的结束的位置，也就是说从start kernel到end kernel是内核占据的，我们不能用这些。  
+        //MEMORY_END就是整个内存可以使用的最大的上界
+        FRAME_ALLOCATOR.exclusive_access().init(
+            PhysAddr::from(ekernel as usize).ceil(),
+            PhysAddr::from(MEMORY_END).floor(),
+        );
+    }
+
+    /// allocate a frame
+    pub fn frame_alloc() -> Option<FrameTracker> {
+        FRAME_ALLOCATOR
+            .exclusive_access()
+            .alloc()
+            .map(FrameTracker::new)
+    }
+
+    /// deallocate a frame
+    fn frame_dealloc(ppn: PhysPageNum) {
+        FRAME_ALLOCATOR.exclusive_access().dealloc(ppn);
+    }
+
+注意到frame_alloc()的返回值为Option，其定义为：
+    /// manage a frame which has the same lifecycle as the tracker
+    //FrameTracker实际上就是ppn：PhysPageNum做了一层封装，我们做这层封装的原因是我们要Drop特性
+    pub struct FrameTracker {
+        pub ppn: PhysPageNum,
+    }
+
+    impl FrameTracker {
+        pub fn new(ppn: PhysPageNum) -> Self {
+            // page cleaning
+            let bytes_array = ppn.get_bytes_array();
+            for i in bytes_array {
+                *i = 0;
+            }
+            Self { ppn }
+        }
+    }
+
+    impl Debug for FrameTracker {
+        fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+            f.write_fmt(format_args!("FrameTracker:PPN={:#x}", self.ppn.0))
+        }
+    }
+
+    //我们的数据结构如果有了Drop，任何一个结构，它在超出了自己的生命周期之后，释放的时候就会调用drop函数，
+    //而这里的drop会将刚才的物理页释放掉
+    impl Drop for FrameTracker {
+        fn drop(&mut self) {
+            frame_dealloc(self.ppn);
+        }
+    }
+
+这样做的好处是，在new()时，可以将对应的页帧清空，更重要的是，当Frame Tracker超出生命周期时，将自动释放掉对应的页帧，这个过程的实现是非常巧妙的，我们让一个PageTable的FrameTracker都属于该PageTable，而每个PageTable又最终属于一个进程，只需要让进程结束时释放页表，而页表释放时释放自身的FrameTracker，则就可以实现进程释放的时候其所占用的所有物理页帧都被释放掉。
+
+### 在三级页表结构中访问和创建虚拟页表的页表项
+第一个相关函数为：  
+    fn find_pte_create(&mut self, vpn: VirtPageNum) -> Option<&mut PageTableEntry>
+
+它能够返回vpn所对应的PTE，若在查询过程中发现其一级页号或二级页号在对应的页表中的页表项并不valid（该上级索引还没有被分配下级页表），则为其分配下级页表以便得到对应的PTE，其基本实现如下：  
+    //src/mm/pagetable.rs
+    impl PageTable {
+        //功能：在页表当中找一个虚拟页对应的页表项，如果没有我们就创建页表项
+        fn find_pte_create(&mut self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
+            //返回一个数组，分别代表一级索引、二级索引、三级索引
+            let mut idxs = vpn.indexes();
+            //根页表的起始地址
+            let mut ppn = self.root_ppn;
+            let mut result: Option<&mut PageTableEntry> = None;
+            for (i, idx) in idxs.iter_mut().enumerate() {
+                //先去根页表里面获取第idx项，找到了根页表里面对应的项pte
+                let pte = &mut ppn.get_pte_array()[*idx];
+                //i==2时break是因为我们的目标不是去找到对应的物理页，我们的目标只是找到或者创建它的表项
+                //i==2的时候上一步pte做完就已经是那个表项了，我们只需要把它赋值给result返回就可以了
+                if i == 2 {
+                    result = Some(pte);
+                    break;
+                }
+                //如果是前面的一级索引无效的话，说明还没有创建对应的二级页表
+                if !pte.is_valid() {
+                    //需要给它分配新的页帧
+                    let frame = frame_alloc().unwrap();
+                    //然后让他能够指向对应的页，并且修改有效位
+                    *pte = PageTableEntry::new(frame.ppn, PTEFlags::V);
+                    //然后要把新建的页帧放进去
+                    self.frames.push(frame);
+                }
+                ppn = pte.ppn();
+            }
+            result
+        }
+    }
+
+另一个类似的函数是：
+    fn find_pte(&self, vpn: VirtPageNum) -> Option<&PageTableEntry>
+其实现为：
+    impl PageTable {
+        fn find_pte(&self, vpn: VirtPageNum) -> Option<&PageTableEntry> {
+            let idxs = vpn.indexes();
+            let mut ppn = self.root_ppn;
+            let mut result: Option<&PageTableEntry> = None;
+            for (i, idx) in idxs.iter().enumerate() {
+                let pte = &ppn.get_pte_array()[*idx];
+                if i == 2 {
+                    result = Some(pte);
+                    break;
+                }
+                if !pte.is_valid() {
+                    return None;
+                }
+                ppn = pte.ppn();
+            }
+            result
+        }
+    }
+实际上它的含义同样为查找vpn对应的PTE，但是如果该PTE还没有在页表中被创建，则返回None。如果返回None则说明它的一级索引或二级索引出了问题；如果没有对应的物理页帧，还是会返回PTE，只是返回的PTE的有效位是无效的。  
+
+配合一下两个函数我们可以不通过MMU而手动查询页表内容。
+    impl PageTable {
+        pub fn new() -> Self {
+            let frame = frame_alloc().unwrap();
+            PageTable {
+                root_ppn: frame.ppn,
+                frames: vec![frame],
+            }
+        }
+
+        pub fn translate(&self, vpn: VirtPageNum) -> Option<PageTableEntry> {
+            self.find_pte(vpn).copied()
+        }
+    }
+
+实现这些功能后，我们提供了两个很重要的函数：
+    #[allow(unused)]
+    pub fn map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags) {
+        let pte = self.find_pte_create(vpn).unwrap();
+        assert!(!pte.is_valid(), "vpn {:?} is mapped before mapping", vpn);
+        *pte = PageTableEntry::new(ppn, flags | PTEFlags::V);
+    }
+    #[allow(unused)]
+    pub fn unmap(&mut self, vpn: VirtPageNum) {
+        let pte = self.find_pte_create(vpn).unwrap();
+        assert!(pte.is_valid(), "vpn {:?} is invalid before unmapping", vpn);
+        *pte = PageTableEntry::empty();
+    }
+
+最后，提供了一个辅助函数用来获取页表的根页表地址：
+    pub fn token(&self) -> usize {
+        8usize << 60 | self.root_ppn.0
+    }
+
+至此，页表相关的结构和方法均已经实现，我们对能被外层调用的接口做一个总结：
+impl PageTable{
+    pub fn new() -> Self;
+    pub fn from_token(satp:usize) -> Self;
+    pub fn map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags);
+    pub fn unmap(&mut self, vpn: VirtPageNum);
+    pub fn translate(&self, vpn: VirtPageNum) -> Option<PageTableEntry>;
+    pub fn token(&self) -> usize;
+}
