@@ -455,15 +455,20 @@ is_valid()表示这个页表项是不是有效的，什么时候会有效，曾�
 实际上它的含义同样为查找vpn对应的PTE，但是如果该PTE还没有在页表中被创建，则返回None。如果返回None则说明它的一级索引或二级索引出了问题；如果没有对应的物理页帧，还是会返回PTE，只是返回的PTE的有效位是无效的。  
 
 配合一下两个函数我们可以不通过MMU而手动查询页表内容。
+/*
+我们的操作系统实际上可以去查每一个进程的页表，这个时候我们希望知道它对应的物理页是哪一个，所以我们需要提供一种手动查询的方式。
+*/
     impl PageTable {
-        pub fn new() -> Self {
-            let frame = frame_alloc().unwrap();
-            PageTable {
-                root_ppn: frame.ppn,
-                frames: vec![frame],
+        //通过页表的基址satp（根目录的地址）获取一个新的页表结构
+        //这个页表与原页表是一样的，我们在这个页表里面做查询工作
+        pub fn from_token(satp: usize) -> Self {
+            Self {
+                root_ppn: PhysPageNum::from(satp & ((1usize << 44) - 1)),
+                frames: Vec::new(),
             }
         }
 
+        //获取页表项，然后复制，copy出来之后我们随意修改，他不会改变原来的页表项
         pub fn translate(&self, vpn: VirtPageNum) -> Option<PageTableEntry> {
             self.find_pte(vpn).copied()
         }
@@ -471,12 +476,14 @@ is_valid()表示这个页表项是不是有效的，什么时候会有效，曾�
 
 实现这些功能后，我们提供了两个很重要的函数：
     #[allow(unused)]
+    //为页表的虚拟页vpn增加一个对应的页表项,物理页号为ppn，标记位为flags。
     pub fn map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags) {
         let pte = self.find_pte_create(vpn).unwrap();
         assert!(!pte.is_valid(), "vpn {:?} is mapped before mapping", vpn);
         *pte = PageTableEntry::new(ppn, flags | PTEFlags::V);
     }
     #[allow(unused)]
+    //取消一个虚拟页vpn的映射
     pub fn unmap(&mut self, vpn: VirtPageNum) {
         let pte = self.find_pte_create(vpn).unwrap();
         assert!(pte.is_valid(), "vpn {:?} is invalid before unmapping", vpn);
@@ -489,11 +496,387 @@ is_valid()表示这个页表项是不是有效的，什么时候会有效，曾�
     }
 
 至此，页表相关的结构和方法均已经实现，我们对能被外层调用的接口做一个总结：
-impl PageTable{
-    pub fn new() -> Self;
-    pub fn from_token(satp:usize) -> Self;
-    pub fn map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags);
-    pub fn unmap(&mut self, vpn: VirtPageNum);
-    pub fn translate(&self, vpn: VirtPageNum) -> Option<PageTableEntry>;
-    pub fn token(&self) -> usize;
-}
+    impl PageTable{
+        //创建空页表
+        pub fn new() -> Self;
+        //根据根目录地址satp创建根目录地址为satp的空页表，其实是对原来页表的拷贝
+        pub fn from_token(satp:usize) -> Self;
+        fn find_pte(&self, vpn: VirtPageNum) -> Option<&PageTableEntry>;
+        find_pte_create(&mut self, vpn: VirtPageNum) -> Option<&mut PageTableEntry>;
+        pub fn map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags);
+        pub fn unmap(&mut self, vpn: VirtPageNum);
+        pub fn translate(&self, vpn: VirtPageNum) -> Option<PageTableEntry>;
+        pub fn token(&self) -> usize;
+    }
+
+## 2、逻辑段与地址空间的构建
+### 逻辑段的结构与方法
+/*
+连续的虚拟页，比如说虚拟页20到虚拟页200，合在一起的小区间，我们把它们叫vpn range，我们如果对它进行统一的管理，我们需要一个结构，就叫MapArea。
+*/
+    /// map area structure, controls a contiguous piece of virtual memory
+    pub struct MapArea {
+        //迭代器，元素为所有的虚拟页
+        vpn_range: VPNRange,
+        //记录映射关系
+        data_frames: BTreeMap<VirtPageNum, FrameTracker>,
+        //表示映射方式
+        map_type: MapType,
+        //逻辑段的访问权限
+        map_perm: MapPermission,
+    }
+
+逻辑段代表了一段连续的虚拟页所构成的虚拟地址空间，其中：
+    /// map type for memory set: identical or framed
+    pub enum MapType {
+        //表示对等映射
+        Identical,
+        表示对于每个虚拟页面都需要映射到一个新分配的物理页帧
+        Framed,
+    }
+
+    bitflags! {
+        /// map permission corresponding to that in pte: `R W X U`
+        pub struct MapPermission: u8 {
+            const R = 1 << 1;
+            const W = 1 << 2;
+            const X = 1 << 3;//执行
+            const U = 1 << 4;//表示是不是在用户态下可以访问
+        }
+    }
+
+MapArea与页表映射有关的方法为：
+    impl MapArea{
+        //创建一个新的MapArea
+        pub fn new(
+            start_va: VirtAddr,
+            end_va: VirtAddr,
+            map_type: MapType,
+            map_perm: MapPermission,
+        ) -> Self {
+            let start_vpn: VirtPageNum = start_va.floor();
+            let end_vpn: VirtPageNum = end_va.ceil();
+            Self {
+                vpn_range: VPNRange::new(start_vpn, end_vpn),
+                data_frames: BTreeMap::new(),
+                map_type,
+                map_perm,
+            }
+        }
+        //为MapArea中的一个虚拟页映射物理页，若为恒等映射，则直接映射到与vpn同号的ppn；否则重新分配一个物理页帧使之映射。映射完成后需要在页表中也完成映射操作。
+        pub fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
+            let ppn: PhysPageNum;
+            match self.map_type {
+                MapType::Identical => {
+                    ppn = PhysPageNum(vpn.0);
+                }
+                MapType::Framed => {
+                    let frame = frame_alloc().unwrap();
+                    ppn = frame.ppn;
+                    self.data_frames.insert(vpn, frame);
+                }
+            }
+            let pte_flags = PTEFlags::from_bits(self.map_perm.bits).unwrap();
+            page_table.map(vpn, ppn, pte_flags);
+        }
+        //解除映射
+        #[allow(unused)]
+        pub fn unmap_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
+            #[allow(clippy::single_match)]
+            match self.map_type {
+                MapType::Framed => {
+                    self.data_frames.remove(&vpn);
+                }
+                _ => {}
+            }
+            page_table.unmap(vpn);
+        }
+        //完成对MapArea中所有虚拟页的映射
+        pub fn map(&mut self, page_table: &mut PageTable) {
+            for vpn in self.vpn_range {
+                self.map_one(page_table, vpn);
+            }
+        }
+        //解除对MapArea中所有虚拟页的映射，并且在某一个页表上把这个映射也消除掉
+        #[allow(unused)]
+        pub fn unmap(&mut self, page_table: &mut PageTable) {
+            for vpn in self.vpn_range {
+                self.unmap_one(page_table, vpn);
+            }
+        }
+    }
+
+在此基础上，可以实现在MapArea中存入数组数据的方法：
+    impl MapArea{
+        /// data: start-aligned but maybe with shorter length
+        /// assume that all frames were cleared before
+        pub fn copy_data(&mut self, page_table: &mut PageTable, data: &[u8]) {
+            assert_eq!(self.map_type, MapType::Framed);
+            let mut start: usize = 0;
+            //虚拟页区间中的第一个虚拟页
+            let mut current_vpn = self.vpn_range.get_start();
+            let len = data.len();
+            loop {
+                //得到数组里面的数据
+                let src = &data[start..len.min(start + PAGE_SIZE)];
+                //找到物理页地址拷贝过去
+                let dst = &mut page_table
+                    .translate(current_vpn)//从页表里面找到对应的页表项
+                    .unwrap()
+                    .ppn()//对应的物理页
+                    .get_bytes_array()[..src.len()];//把它变成了一个字节数组
+                dst.copy_from_slice(src);
+                //最多拷贝一个页
+                start += PAGE_SIZE;
+                if start >= len {
+                    break;
+                }
+                current_vpn.step();
+            }
+        }
+    }
+
+该函数将数据放入范围内的每个页中，一个页存满了则进入下一个页存放，直到全部数据存放完毕或者MapArea中的虚拟页全部被用完。至此，我们可以以此为基础完成对进程地址空间的定义。
+
+### 地址空间的结构与方法
+地址空间是与进程一一对应的，其结构为：
+    /// memory set structure, controls virtual-memory space
+    pub struct MemorySet {
+        page_table: PageTable,//一个地址空间对应一个页表
+        areas: Vec<MapArea>,//一系列逻辑段
+    }
+
+它包含一个页表和一系列逻辑段，其基本方法包括：
+    impl MemorySet {
+        //创建一个空的地址空间
+        pub fn new_bare() -> Self {
+            Self {
+                page_table: PageTable::new(),
+                areas: Vec::new(),
+            }
+        }
+        //获取内置页表的根目录地址satp
+        pub fn token(&self) -> usize {
+            self.page_table.token()
+        }
+        //获取内置页表对应虚拟页号vpn的页表项PTE
+        pub fn translate(&self, vpn: VirtPageNum) -> Option<PageTableEntry> {
+            self.page_table.translate(vpn)
+        }
+        //push方法将data写入逻辑段map_area中，再将map_area插入地址空间MemorySet
+        //并且要将页表的映射也给完成了
+        fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) {
+            //将map_area于pagetable绑定并分配物理页帧，完成了页表的映射
+            map_area.map(&mut self.page_table);
+            if let Some(data) = data {
+                map_area.copy_data(&mut self.page_table, data);
+            }
+            self.areas.push(map_area);
+        }
+        /// Assume that no conflicts.
+        //地址空间MemorySet中根据传入的参数插入一个没有存放数据的Frame类型的MapArea
+        //在地址空间里面加入一串连续的地址映射
+        pub fn insert_framed_area(
+            &mut self,
+            start_va: VirtAddr,
+            end_va: VirtAddr,
+            permission: MapPermission,
+        ) {
+            self.push(
+                MapArea::new(start_va, end_va, MapType::Framed, permission),
+                None,
+            );
+        }
+
+    }
+
+下面介绍一个特殊的函数：
+    /// Mention that trampoline is not collected by areas.
+    //功能：在自己的页表里面加入一个映射
+    //会把虚拟页TRAMPOLINE和中断入口strampoline关联起来，也就是说，一个地址空间，如果我们给它指向了这个函数，我们可以利用TRAMPOLINE去访问中断strampoline。
+    //在内置页表中，将虚拟地址TRAMPOLINE所对应的虚拟页映射到__alltraps所对应的页。
+    fn map_trampoline(&mut self) {
+        self.page_table.map(
+            VirtAddr::from(TRAMPOLINE).into(),
+            PhysAddr::from(strampoline as usize).into(),
+            PTEFlags::R | PTEFlags::X,
+        );
+    }
+
+我们注意到，这里出现了两个参数TRAMPOLINE和strampoline，我们分别看一下他们的定义：
+    //src/config.rs
+    //虚拟页里面地址最高就是usize::MAX，TRAMPOLINE因为减去一个PAGE_SIZE在次高页的位置上
+    pub const TRAMPOLINE: usize = usize::MAX - PAGE_SIZE + 1;
+
+    # src/linker.ld
+    .text : {
+        *(.text.entry)
+        . = ALIGN(4K);//按页对齐
+        strampoline = .;//strampoline一定是一个页的起点
+        *(.text.trampoline);
+        . = ALIGN(4K);
+        *(.text .text.*)
+    }
+
+    #src/trap/trap.S
+        .section .text.trampoline
+        .globl __alltraps
+        .globl __restore
+        .align 2
+    __alltraps://每次进入中断的时候
+
+可以看到strampoline对应了__alltraps所对应的物理页的起始地址。
+
+接下来，我们来实现内核载入时映射地址空间的函数：
+    pub fn new_kernel() -> Self {
+        let mut memory_set = Self::new_bare();
+        // map trampoline
+        //内核地址空间与中断的位置对应起来
+        memory_set.map_trampoline();
+        // map kernel sections
+        info!(".text [{:#x}, {:#x})", stext as usize, etext as usize);
+        info!(".rodata [{:#x}, {:#x})", srodata as usize, erodata as usize);
+        info!(".data [{:#x}, {:#x})", sdata as usize, edata as usize);
+        info!(
+            ".bss [{:#x}, {:#x})",
+            sbss_with_stack as usize, ebss as usize
+        );
+        //内核代码段对等映射
+        info!("mapping .text section");
+        memory_set.push(
+            MapArea::new(
+                (stext as usize).into(),
+                (etext as usize).into(),
+                MapType::Identical,
+                MapPermission::R | MapPermission::X,
+            ),
+            None,
+        );
+        //内核rodata段对等映射
+        info!("mapping .rodata section");
+        memory_set.push(
+            MapArea::new(
+                (srodata as usize).into(),
+                (erodata as usize).into(),
+                MapType::Identical,
+                MapPermission::R,
+            ),
+            None,
+        );
+        //数据段对等映射
+        info!("mapping .data section");
+        memory_set.push(
+            MapArea::new(
+                (sdata as usize).into(),
+                (edata as usize).into(),
+                MapType::Identical,
+                MapPermission::R | MapPermission::W,
+            ),
+            None,
+        );
+        //bss段对等映射
+        info!("mapping .bss section");
+        memory_set.push(
+            MapArea::new(
+                (sbss_with_stack as usize).into(),
+                (ebss as usize).into(),
+                MapType::Identical,
+                MapPermission::R | MapPermission::W,
+            ),
+            None,
+        );
+        //对整个内核到内存尽头这一段做了对等映射
+        info!("mapping physical memory");
+        memory_set.push(
+            MapArea::new(
+                (ekernel as usize).into(),
+                MEMORY_END.into(),
+                MapType::Identical,
+                MapPermission::R | MapPermission::W,
+            ),
+            None,
+        );
+        memory_set
+    }
+
+可以看到，内核的地址空间对应了多个恒等映射的逻辑段。
+/*
+也就是说，对我们的操作系统来说，通过new_kernel出来的时候，整个地址空间都是一个对等映射，我们想访问哪个物理页我们直接写就行了，虚拟页就是物理页，虚拟地址就是物理地址。
+*/
+
+下面是载入elf文件的用户态程序的地址空间建立过程：
+/*
+实际上，虚拟地址在我们做内部链接的时候就已经形成了
+*/
+    pub fn from_elf(elf_data: &[u8]) -> (Self, usize, usize) {
+        let mut memory_set = Self::new_bare();
+        // map trampoline
+        //不管是对内核还是用户来说，都是通过同样的一个物理地址来跳到中断这个位置
+        memory_set.map_trampoline();
+        // map program headers of elf, with U flag
+        let elf = xmas_elf::ElfFile::new(elf_data).unwrap();
+        let elf_header = elf.header;
+        let magic = elf_header.pt1.magic;
+        assert_eq!(magic, [0x7f, 0x45, 0x4c, 0x46], "invalid elf!");
+        //应用程序在链接的时候就已经确定了每个数据的虚拟地址，在载入系统的时候，数据在程序中的虚拟地址和在虚拟内存中的虚拟地址是一致的，这样才能保证程序
+        let ph_count = elf_header.pt2.ph_count();
+        let mut max_end_vpn = VirtPageNum(0);
+        for i in 0..ph_count {
+            let ph = elf.program_header(i).unwrap();
+            if ph.get_type().unwrap() == xmas_elf::program::Type::Load {
+                let start_va: VirtAddr = (ph.virtual_addr() as usize).into();
+                let end_va: VirtAddr = ((ph.virtual_addr() + ph.mem_size()) as usize).into();
+                let mut map_perm = MapPermission::U;
+                let ph_flags = ph.flags();
+                if ph_flags.is_read() {
+                    map_perm |= MapPermission::R;
+                }
+                if ph_flags.is_write() {
+                    map_perm |= MapPermission::W;
+                }
+                if ph_flags.is_execute() {
+                    map_perm |= MapPermission::X;
+                }
+                let map_area = MapArea::new(start_va, end_va, MapType::Framed, map_perm);
+                max_end_vpn = map_area.vpn_range.get_end();
+                memory_set.push(
+                    map_area,
+                    Some(&elf.input[ph.offset() as usize..(ph.offset() + ph.file_size()) as usize]),
+                );
+            }
+        }
+        // map user stack with U flags
+        let max_end_va: VirtAddr = max_end_vpn.into();
+        let mut user_stack_bottom: usize = max_end_va.into();
+        // guard page
+        user_stack_bottom += PAGE_SIZE;
+        let user_stack_top = user_stack_bottom + USER_STACK_SIZE;
+        memory_set.push(
+            MapArea::new(
+                user_stack_bottom.into(),
+                user_stack_top.into(),
+                MapType::Framed,
+                MapPermission::R | MapPermission::W | MapPermission::U,
+            ),
+            None,
+        );
+        // map TrapContext
+        memory_set.push(
+            MapArea::new(
+                TRAP_CONTEXT.into(),
+                TRAMPOLINE.into(),
+                MapType::Framed,
+                MapPermission::R | MapPermission::W,
+            ),
+            None,
+        );
+        (
+            memory_set,
+            user_stack_top,
+            elf.header.pt2.entry_point() as usize,
+        )
+    }
+
+返回了一个三元组（进程的MemorySet，用户栈地址，入口地址）
+
+这里对几个比较重要的部分进行分析：
