@@ -46,7 +46,7 @@ pub fn sys_yeild() -> isize叫做调度，也就是说现在的进程放弃CPU�
 在本次实验中，只有在pub static ref TASK_MANAGER: TaskManager = {.....let mut tasks = [TaskControlBlock｛task_cx:TaskContext::zero_init(),
 task_status:TaskStatus::UnInit,syscall_times:[0,MAX_SYSCALL_NUM],start_time:0,
 ｝；MAX_APP_NUM];.....}有初始化操作，我们把syscall_times和start_time加上。
-### 3、在task第一次被调度的时候为期start_time赋值
+### 3、在task第一次被调度的时候为其start_time赋值
 在这里我们用了一个小trick，用start_time本身来做一个flag，当调度到某task时发现其start_time为0，则说明该task第一次被调度，将start_time设计为当前时间，否则说明该task已经被调度过，不修改其start_time。
 所以在fn run_next_task(&self){
     if let Some(next) = self.find_next_task(){
@@ -63,7 +63,7 @@ task_status:TaskStatus::UnInit,syscall_times:[0,MAX_SYSCALL_NUM],start_time:0,
 impl TaskManager{
     .....
     fn get_current_TaskControlBlock_start_time(&self) -> usize{
-        let inner = self.inner.exclusive_accsee();
+        let inner = self.inner.exclusive_access();
         let current = inner.current_task;
         inner.tasks[current].start_time
     }
