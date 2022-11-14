@@ -88,5 +88,15 @@ pub fn sys_task_info(ti:*mut TaskInfo) -> isize{
     }
     0
 }
+
+测试出现问题，是因为数组过大，导致启动栈溢出，解决方法为：
+
+    1、把 syscall_times 存在一个 Vec 中。因为 heap_alloc 中已经指定了 global_allocator，所以其实已经可以用堆了。
+    2、在 entry.asm 里修改 boot_stack 的大小，本来应该是 4096*16，改成 4096*32 应该就可以。可能还需要把 Cargo.toml 里面的 opt-level=0 注释掉，启动较高等级的优化。
+    3、ch3_taskinfo.rs 里需要返回值是 [u32;500]，但你存在 TCB 中的可以是 [u32;5]，只要在系统调用的那个地方填入相应的值，其它的填 0 就好了。
+    4、在 Cargo.toml 里注释掉 opt-level=0，并添加 lto="fat" 开启链接时优化。
+    5、把 syscall_times 存在 TrapContext 或者 TaskContext 或者内核栈之类的地方，总之就是换个位置。
+
+
 至此，本实验的主体框架和编程练习已经完成。
 
