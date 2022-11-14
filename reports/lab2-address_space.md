@@ -1068,37 +1068,35 @@ __restore包含了地址空间恢复和现场恢复。
     }
 
 它传入的是一个TimeVal类型的指针，发起系统调用时是在用户态下传入的地址，在内核态下，该地址显然不再是传入的数据的位置，因此，我们只需要找到真实的地址位置即可。因此，我们只需要实现一个当前进程虚拟地址到物理地址的转换方法即可，一种实现方式为：
-    ///通过页表转换泛型并返回可变引用
-    //实现虚拟地址到物理地址的转换
-    pub fn get_refmut<T>(token: usize, ptr: *mut T) -> &'static mut T {
+    pub fn translated_physical_address(token: usize, ptr: *const u8) -> usize{
         let page_table = PageTable::from_token(token);
-        let virtual_address = VirtAddr::from(ptr as usize);
-        let offset = virtual_address.page_offset();
-        let virtual_page_number = virtual_address.floor();
-        let physical_page_entry = page_table.find_pte(virtual_page_number).unwrap();
-        let physical_page_num = physical_page_entry.ppn();
-        let start_address = PhysAddr::from(physical_page_num);
-        let physical_address = PhysAddr::from(usize::from(start_address) + offset);
-        physical_address.get_mut()
+        let mut va = VirtAddr::from(ptr as usize);
+        let ppn = page_table.find_pte(va.floor()).unwrap().pnn();
+        super::PhysAddr::from(ppn).0 + va.page_offset()
     }
 由此，可以得到答案方法：
-    pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
-        let us = get_time_us();
-        let ts_phy_ptr = mm::get_refmut(current_user_token(), ts);
-        *ts_phy_ptr = TimeVal {
-            sec: us / 1_000_000,
-            usec: us % 1_000_000,
-        };
+
+    pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
+        let _us = get_time_us();
+        let ts = translated_physical_address(_ts as *const u8) as *mut TimeVal;
+        unsafe {
+            *ts = TimeVal {
+                sec: us / 1_000_000,
+                usec: us % 1_000_000,
+            };
+        }
         0
     }
 
     pub fn sys_task_info(ti: *mut TaskInfo) -> isize {
-        let ti_phy_ptr = mm::get_refmut(current_user_token(), ti);
-        *ti_phy_ptr = TaskInfo {
-            status: TaskStatus::Running,
-            syscall_times: get_syscall_times(),
-            time: get_current_task_time(),
-        };
+        let _ti = translated_physical_address(is as *const u8) as *mut TaskInfo;
+        unsafe{
+            *_ti = TaskInfo{
+                status:get_current_status(),
+                syscall_times:get_syscall_times,
+                time:(get_time_us()-get_current_start_time())/1000,
+            };
+        }
         0
     }
 
@@ -1155,6 +1153,37 @@ tips:
         );
     }
 这个方法与我们要实现的函数的参数基本一致，因此我们把它作为主题函数，同时不要忘了对参数进行类型检查，最终我们的实现方法如下：
+    impl MemorySet{
+        pub fn mmap(&mut self,start: usize, len: usize, port: usize) -> isize{
+            //把地址变成了一个范围
+            let vpnrange = VPNRange::new(VirtAddr::from(start).floor(), VirtAddr::from(start+len).ceil());
+            //检查每个页是否已经被映射过了
+            for vpn in vpnrange{
+                if let Some(pte) = self.page_table.find_pte(vpn){
+                    //对应页表项是否有效
+                    if pte.is_valid(){
+                        return -1;
+                    }
+                }
+            }
+            let mut map_prem = MapPermission::U;
+            if (port & 1)!=0{
+                map_perm|=MapPermission::R;
+            }
+            if (port & 2)!=0{
+                map_perm|=MapPermission::W;
+            }
+            if (port & 4)!=0{
+                map_perm|=MapPermission::X;
+            }
+            //把这一部分插入到地址空间里面去
+            self.insert_framed_area(VirtAddr::from(start), VirtAddr::from(start+len), map_perm);
+            0
+        }
+    }
+
+
+
     fn mmap(&self, start: usize, len: usize, port: usize) -> isize {
         if (start % config::PAGE_SIZE != 0) || (port & !0x7 != 0) || (port & 0x7 == 0) {
             return -1;
@@ -1197,6 +1226,29 @@ tips:
 此后，由系统调用函数直接调用当前进程的MemorySet的该方法再加上一些必要的边界检查即可。
 
 同样，我们也可以在MemorySet中加入munmap方法：
+
+    impl MemorySet {
+        pub fn munmap(&mut self, start: usize, len: usize) -> isize{
+            let vpnrange = VPNRange::new(VirtAddr::from(start).floor(), VirtAddr::from(start+len).ceil());
+            //检查已经没有被映射
+            for vpn in vpnrange{
+                let pte = self.page_table.find_pte(vpn);
+                if pte.is_none() || !pte.unwrap().is_valid(){
+                    return -1;
+                }
+            }
+            for vpn in vpnrange{
+                for area in &mut self.areas{
+                    if vpn < area.vpn_range.get_end() && vpn >= area.vpn_range.get_start(){
+                        area.unmap_one(&mut self.page_table, vpn);
+                    }
+                }
+            }
+            0
+        }
+}
+
+
     fn munmap(&self, start: usize, len: usize) -> isize {
         if start % config::PAGE_SIZE != 0 {
             return -1;
