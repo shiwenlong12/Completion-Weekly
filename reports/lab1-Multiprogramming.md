@@ -43,9 +43,18 @@ pub fn sys_yeild() -> isize叫做调度，也就是说现在的进程放弃CPU�
 ### 1、在TaskControlBlock中增加相应的元素来记录需要的值
 首先我们需要知道每一个进程都有自己的time，也都有自己的syscall_times，那么最好的方式就是把它们记录在控制块TaskControlBlock中，所以我们在TaskControlBlock中增加两个项，一个是syscall_times，一个是start_time，我们向TCB增加了内容，那么在TCB进行各种初始化和赋值的时候我们也需要进行修改,因为在之前初始化和赋值的时候没有考虑这两个变量。  
 ### 2、为所有初始化和赋值TCB的函数增加对应的初始化和赋值  
-在本次实验中，只有在pub static ref TASK_MANAGER: TaskManager = {.....let mut tasks = [TaskControlBlock｛task_cx:TaskContext::zero_init(),
-task_status:TaskStatus::UnInit,syscall_times:[0,MAX_SYSCALL_NUM],start_time:0,
-｝；MAX_APP_NUM];.....}有初始化操作，我们把syscall_times和start_time加上。
+在本次实验中，只有在
+    pub static ref TASK_MANAGER: TaskManager = {
+        .....
+        let mut tasks = [TaskControlBlock｛
+            task_cx:TaskContext::zero_init(),
+            task_status:TaskStatus::UnInit,
+            syscall_times:[0,MAX_SYSCALL_NUM],
+            start_time:0,
+        ｝；MAX_APP_NUM];
+        .....
+    }
+有初始化操作，我们把syscall_times和start_time加上。
 ### 3、在task第一次被调度的时候为其start_time赋值
 在这里我们用了一个小trick，用start_time本身来做一个flag，当调度到某task时发现其start_time为0，则说明该task第一次被调度，将start_time设计为当前时间，否则说明该task已经被调度过，不修改其start_time。
 所以在fn run_next_task(&self){
@@ -62,14 +71,14 @@ task_status:TaskStatus::UnInit,syscall_times:[0,MAX_SYSCALL_NUM],start_time:0,
 在之前，我们只是加在了TaskManager里面，然后实际上我们需要给程序提供一个公共的接口，这样的话让我们的框架更加清晰，所以我们增加了两个公共函数去调用里面的start_time和获取它的状态status,因为我们的info里面还要必须有一个状态。
 impl TaskManager{
     .....
-    fn get_current_TaskControlBlock_start_time(&self) -> usize{
+    fn get_current_start_time(&self) -> usize{
         let inner = self.inner.exclusive_access();
         let current = inner.current_task;
         inner.tasks[current].start_time
     }
 }
 pub fn get_current_start_time() -> usize{
-    TASK_MANAGER.get_current_TaskControlBlock_start_time();
+    TASK_MANAGER.get_current_start_time()
 }
 ### 5、增加syscall_times的记录和处理
 我们首先在TaskManager中增加了一个函数fn add_syscall_times(&self,syscall_id:usize)功能是增加某一个sysacll_id的系统调用计数，这个很简单，就是我们只要调用了这个函数，那么某一个syscall的计数就会加一，然后我们同样给它提供两个对外的接口，一个是add_syscall_times(syscall_id:u32)，一个是get_syscall_times()->[u32,MAX_SYSCALL_NUM],因为我们最后获取info的时候需要get一下。我们怎么时候应该去调用add_syscall_times增加syscall的计数呢，当然是syscall/mod.rs里面当某一个系统调用马上就要执行的时候，我们先做一步add,这样的话就能够记录该进程的任何一个syscall次数。
