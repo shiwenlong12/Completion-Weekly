@@ -490,25 +490,28 @@ TIPS：虽然测例很简单，但提醒读者 spawn 不必 像 fork 一样复�
 借鉴fork()和exec()的实现过程，我们可以看到实现spawn（）只需要进行如下几步操作即可：
     1、根据exec()中的参数创建新的地址空间memory_set。
     2、创建新的TaskControlBlock，模仿fork()进行初始化赋值工作，除了把复制地址空间的操作修改为把地址空间赋值给memory_set。
+    
     pub fn sys_spawn(_path: *const u8) -> isize {
         let token = current_user_token();
-        let path = translated_str(token, path);
+        let path = translated_str(token, _path);
         if let Some(data) = get_app_data_by_name(path.as_str()) {
             let new_task: Arc<TaskControlBlock> = Arc::new(TaskControlBlock::new(data));
-            let mut new_inner = new_task.inner_exclusive_access;
-            let parent = current_task().unwrap;
-            let mut parent_inner = parent.inner_exclusive_access; 
+            let mut new_inner = new_task.inner_exclusive_access();
+            let parent = current_task().unwrap();
+            let mut parent_inner = parent.inner_exclusive_access(); 
             new_inner.parent = Some(Arc::downgrade(&parent));
-            parent_inner.children.push(new_task.Clone());
+            parent_inner.children.push(new_task.clone());
             drop(new_inner);
             drop(parent_inner);
             let new_pid = new_task.pid.0;
             add_task(new_task);
             new_pid as isize
-        } else {
+        }
+        else {
             -1
         }
     }
+
 
 ## stride调度算法
 chapter3中我们实现的调度算法十分简单。现在我们要为我们的OS实现一种带优先级的调度算法：stride调度算法。

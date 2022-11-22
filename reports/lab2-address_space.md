@@ -1100,6 +1100,27 @@ __restore包含了地址空间恢复和现场恢复。
         0
     }
 
+    pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
+        let _us = get_time_us();
+        let va = VirtAddr::from(_ts as usize);
+        let vpn = va.floor();
+        let token = current_user_token();
+        let page_table = PageTable::from_token(token);
+        let ppn = page_table.translate(vpn).unwrap().ppn();
+        let offset = va.page_offset();
+        let sec = _us / 1000000;
+        let usec = _us % 1000000;
+        let pa: PhysAddr = ppn.into();
+        unsafe {
+            let time = ((pa.0 + offset) as *mut TimeVal).as_mut().unwrap();
+            *time = TimeVal {
+                sec: sec,
+                usec: usec,
+            }
+        }    
+        0
+    }
+
 ## 问题二：mmap和munmap匿名映射
 mmap 在 Linux 中主要用于在内存中映射文件， 本次实验简化它的功能，仅用于申请内存。
 

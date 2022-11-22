@@ -98,14 +98,157 @@ sys-close功能为关闭进程对文件描述符为fd的文件的访问权限。
    fn linkat(olddirfd:i32,oldpath:*const u8,newdirfd:i32,newpath:*const u8,flags:u32) -> i32功能是创建一个文件的硬链接。
    fn unlinkat(dirfd:i32,path:*const u8,flags:u32) ->i32功能是取消一个文件路径到文件的链接。
 ### sys_linkat
-   在这次实验中，pub fn sys_linkat（oldpath:*const u8,newpath:*const u8） -> isize,语义就是创建一个新的目录项，name为newpath，将其链接到oldpath对应的DiskInode上。它的基本思路很简单，通过oldpath检索对应的inode编号n，再找到对应的DiskInode，将这个DiskInode的链接计数加1，然后创建一个新的目录项，新目录项的name是newpath，索引节点的编号为n，就可以完成任务，将新的目录项链接上了。主要通过link_file()函数来实现,link_file(oldname:&str,newname:&str) -> Option<()>在根目录下实现ROOT_INODE.link(oldname,newname)。
-   重点就是Inode结构里的函数实现，link(&self,oldname:&str,newname:&ste) -> Option<()>实现方法是首先获取old_inode_id，如果没有旧的id，那么就是失败了直接返回NONE，然后获取旧的id对应的DiskInode的块编号block_id和块偏移量block_offset，然后就能够将DiskInode的链接计数加一n.nlink += 1,然后通过modify_disk_inode修改root_inode，向里面write_at，从原文件的末尾处开始写，写我们新创建的这个目录项。
+ 在这次实验中，pub fn sys_linkat（oldpath:*const u8,newpath:*const u8） -> isize,语义就是创建一个新的目录项，name为newpath，将其链接到oldpath对应的DiskInode上。  
+ 它的基本思路很简单，通过oldpath检索对应的inode编号n，再找到对应的DiskInode，将这个DiskInode的链接计数加1，然后创建一个新的目录项，新目录项的name是newpath，索引节点的编号为n，就可以完成任务，将新的目录项链接上了。  
+ 主要通过link_file()函数来实现,link_file(oldname:&str,newname:&str) -> Option<()>在根目录下实现ROOT_INODE.link(oldname,newname)。
+ 重点就是Inode结构里的函数实现，link(&self,oldname:&str,newname:&ste) -> Option<()>实现方法是首先获取old_inode_id，如果没有旧的id，那么就是失败了直接返回NONE，然后获取旧的id对应的DiskInode的块编号block_id和块偏移量block_offset，然后就能够将DiskInode的链接计数加一n.nlink += 1,然后通过modify_disk_inode修改root_inode，向里面write_at，从原文件的末尾处开始写，写我们新创建的这个目录项。
+   //os/src/syscall/fs.rs
+   pub fn sys_linkat(_old_name: *const u8, _new_name: *const u8) -> isize {
+      let task = current_task().unwrap();
+      let token = current_user_token();
+      let old_name = translated_str(token, _old_name);
+      let new_name = translated_str(token, _new_name);
+      linkat(&old_name, &new_name)
+   }
+
+   //os/src/fs/inode.rs
+   pub fn linkat(old_name: &str, new_name: &str) -> isize {
+      //TO DO: add an DirEntry to ROOT_INODE, and increment OSInode.nlink 
+      //Is this things should be given to EFS? If so, nlink, statMode are in EFS/Inode?
+      if let Some(inode) = ROOT_INODE.find(old_name) {
+         if old_name == new_name {
+               -1
+         }
+         else {
+               ROOT_INODE.link(old_name, new_name)
+         }
+      }
+      else {
+         -1
+      }
+   }
+
+   //easy-fs/src/vfs.rs
+   pub fn link(&self, old_name: &str, new_name: &str) -> isize {
+        if let Some(mut inode) = self.find(old_name) {
+            let mut fs = self.fs.lock();
+            if let Some(inode_id) = self.read_disk_inode(|disk_inode| {self.find_inode_id(old_name, disk_inode)}){
+                self.modify_disk_inode(|root_inode| {
+                    // append file in the dirent
+                    let file_count = (root_inode.size as usize) / DIRENT_SZ;
+                    let new_size = (file_count + 1) * DIRENT_SZ;
+                    // increase size
+                    self.increase_size(new_size as u32, root_inode, &mut fs);
+                    // write dirent
+                    let dirent = DirEntry::new(new_name, inode_id);
+                    root_inode.write_at(
+                        file_count * DIRENT_SZ,
+                        dirent.as_bytes(),
+                        &self.block_device,
+                    );
+                });
+                0
+            }
+            else {
+                -1
+            }
+        }
+        else {
+            -1
+        }
+    }
+
 ### sys_unlinkat
    sys_unlinkat(path：*const u8) -> isize功能是将path对应的硬链接删除。
    unlinkat稍微复杂一点，因为检索到path对应的DiskInode，将其所对应的链接计数减一之后，还需要从根目录中把名为path的目录项移除,这个移除的实现比较复杂。还有就是如果链接计数为0了之后，我们需要去把这个DiskInode去释放掉，好在释放函数我们都已经写好了。
    具体实现与linkat一样，主要关注unlink(&self,name:&str) -> Option<()>，删除目录项的实现方法是新建一个可变向量V，我们需要找到文件名等于传入参数name的目录项，并且把它删掉，我们把其他的不用被删除的目录项全部用向量V保存起来，然后我们把V里面的内容拿给根目录重写一下，就实现了删除指定目录项的功能。实现就是先访问到根目录里面，然后同样是检索，如果检索的目录项的名字不是传入的名字，那么我们就把这个目录项push到V中，如果是传入的name，那么我们就可以获取到它里面的哪个inode也就是文件对应的inode，把inode写在inid里面。然后我们再去根目录里面，我们需要把根目录给dealloc掉，然后我们把V重新写进去，写完之后，我们需要把n.nlink -=1,如果n.nlink==0，也就是引用计数没了，那么我们需要把整个全部清空，做完了这些只是get_block_cache对缓冲区做的，我们还需要一致化，把修改的结果弄到磁盘里面去，sys_unlink才算完成。
+   pub fn sys_unlinkat(_name: *const u8) -> isize {
+      let task = current_task().unwrap();
+      let token = current_user_token();
+      let name = translated_str(token, _name);
+      unlinkat(&name)
+   }
+
+   pub fn unlinkat(name: &str) -> isize {
+      if let Some(inode) = ROOT_INODE.find(name) {
+         ROOT_INODE.unlink(name)
+      }
+      else {
+         -1
+      }
+   }
+
+    pub fn unlink(&self, name: &str) -> isize {
+        if let Some(mut inode) = self.find(name) {
+            let mut fs = self.fs.lock();
+            if let Some(inode_id) = self.read_disk_inode(|disk_inode| {self.find_inode_id(name, disk_inode)}){
+                self.modify_disk_inode(|root_inode| {
+                    let file_count = (root_inode.size as usize) / DIRENT_SZ;
+                    let mut dirent = DirEntry::empty();
+                    for i in 0..file_count{
+                        assert_eq!(
+                            root_inode.read_at(i * DIRENT_SZ, dirent.as_bytes_mut(), &self.block_device),
+                            DIRENT_SZ
+                        );
+                        if dirent.name() == name{
+                            root_inode.write_at(
+                                i * DIRENT_SZ,
+                                DirEntry::empty().as_bytes(),
+                                &self.block_device,
+                            );
+                        }
+                    }
+                });
+                0
+            }
+            else {
+                -1
+            }
+        }
+        else {
+            -1
+        }
+    }
+
 ## fstat
    fstat(fd:i32,st:*mut Stat) -> i32,功能是获取文件的状态，参数为fd文件描述符，st文件状态结构体。stat获取起来很简单，主要还是一个地址转化的过程，获取stat的关键主要是参数inodo文件所在inode编号ino，文件类型mode，硬链接数量nlink。
+   //syscall/fs.rs
+   pub fn sys_fstat(_fd: usize, _st: *mut Stat) -> isize {
+      let current_task = current_task().unwrap();
+      let token = current_user_token();
+      let page_table = PageTable::from_token(token);
+      let va = VirtAddr::from(_st as usize);
+      let vpn = va.floor();
+      let ppn = page_table.translate(vpn).unwrap().ppn();
+      let offset = va.page_offset();
+      let pa: PhysAddr = ppn.into();
+      let task_inner = current_task.inner_exclusive_access();
+      if let Some(file) = &task_inner.fd_table[_fd]{
+         unsafe {
+               file.stat(&mut *((pa.0 + offset) as *mut Stat))
+         }
+      }else {
+         -1
+      }
+   }
+
+   //fs/inode.rs
+      fn stat(&self, st: &mut Stat) -> isize {
+        let inode = &self.inner.exclusive_access().inode;
+        st.dev = 0;
+        st.mode = inode.read_disk_inode(|diskinode| {
+            if diskinode.is_dir() {
+                StatMode::DIR
+            }
+            else {
+                StatMode::FILE
+            }
+        });
+        st.ino = inode.block_id as u64;
+        st.nlink = ROOT_INODE.get_nlink(inode);
+        st.pad = [0; 7];
+        0
+    }
    
    
    
