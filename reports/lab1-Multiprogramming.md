@@ -76,6 +76,16 @@ impl TaskManager{
         let current = inner.current_task;
         inner.tasks[current].start_time
     }
+    fn get_current_syscall_times(&self, syscall_id:usize) -> usize{
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].syscall_times[syscall_id]
+    }
+    fn update_syscall_times(&self, syscall_id:usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].syscall_times[syscall_id] += 1;
+    }
 }
 pub fn get_current_start_time() -> usize{
     TASK_MANAGER.get_current_start_time()
