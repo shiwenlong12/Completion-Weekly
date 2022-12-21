@@ -34,6 +34,10 @@ sys-close功能为关闭进程对文件描述符为fd的文件的访问权限。
    根据上述描述，我们知道，只要我们把文件的DiskInide最终转化为OSInode并存放在进程的fd_table中，并获取其id，就可以实现对文件数据的随机访问了，而open()操作实际上就是实现这个过程。  
 ### 目录与目录项
    想要实现open（）的功能，我们就必须要获取文件对应的DiskInide编号。因为获取了DiskInide编号我们就能找到对应的DiskInide，找到了DiskInide我们就能够封装一个Inode结构出来，有了这个Inode我们就能封装一个OSInode结构，然后有了这个OSInode结构放到表里面去，任务就完成。
+   pub struct DirEntry {
+      name: [u8; NAME_LENGTH_LIMIT + 1],
+      inode_number: u32,
+   }
    这里我们设计了一个特殊的结构：目录项DirEntry，这个结构包含一个文件名name和一个对应的索引号inode_number，因此我们只需要找到name为给定名称的DerEntry就可以了。然而，文件系统中的DerEntry可能有很多，而且需要可持久化的存储，我们不可能把DerEntry放在内存中，因此，我们把这些DerEntry也放在了一个文件中，并且将这个文件的DiskInide放在DiskInide表的0号位置，这个用来放置DerEntry的文件叫做目录，在我们的实验中只有一个目录文件，即根目录文件，它的DiskInide编号为0号，我们随时都可以访问到它。而通过遍历这个文件，我们就可以找到name为我们需要的名称的对应的DerEntry了。  
    DerEntry结构包含的方法有：as_bytes（）和as_bytes_mut（）访问并修改它们；name(),inode_number()。
    至此，我们可以为Inode结构提供检索对应文件名的Inode编号的方法。在Inode结构里面进行这项操作的原因是根目录的DiskInode的编号是固定的0号，find_inode_id()功能是从根目录里面找到name对应的目录项，参数是&self,name,disk_inode;实现方法是遍历了根目录里面的所有目录项，如果目录项的名字等于传入的参数name，那么我们就返回这个目录项的编号。函数find（）功能：返回Inode;参数是&self,name,&str；要返回一个Inode形式，实现是将self对应的disk_inode放进去，然后通过find_inode_id(name,disk_inode)获取一个对应的编号。  
